@@ -23,13 +23,15 @@ format: html
 #| warning: false
 
 #install.packages("xgboost")
-
+#install.packages("doParallel")
 library(tidymodels)
 library(tidyverse)
 library(vip)
 library(ranger)
 library(finetune)
 library(xgboost)
+library(dials)
+library(doParallel)
 ```
 
 ```{r weather}
@@ -102,23 +104,27 @@ weather_recipe <-
   # Defining predicted and predictor variables
   recipe(strength_gtex ~ .,
          data = weather_train) %>%
+  step_integer(all_nominal()) %>% 
   # Removing year and site  
-    step_rm(year, site, matches("Jan|Feb|Mar|Apr|Nov|Dec")) #%>%
+    step_rm(year, site, matches("Jan|Feb|Mar|Apr|Nov|Dec")) %>%
+prep(traing = weather_train, retain = T) %>% 
+  juice()
   # Normalizing all numeric variables except predicted variable
   #step_normalize(all_numeric(), -all_outcomes())
-
+x <- as.matrix(weather_recipe[setdiff(names(weather_recipe), "strength_gtex")])
+y <- weather_recipe$strength_gtex
 weather_recipe
 ```
 
 Now that we have our recipe ready, we **need to apply it** to the training data in a process called prepping:
 
 ```{r weather_prep}
-weather_prep <- weather_recipe %>%
-  prep()
+#weather_prep <- weather_recipe %>%
+ # prep()
 
 weather_prep
-x <- as.matrix(weather_prep[setdiff(names(weather_prep), "strength_gtex")])
-y <- weather_prep$strength_gtex
+#X <- as.matrix(weather_prep[setdiff(names(weather_prep), "strength_gtex")])
+#Y <- weather_prep$strength_gtex
 ```
 
 
@@ -129,21 +135,18 @@ Now, we're ready to start the model training process!
   
   
 ```{r rf_spec}
-xg_spec <- 
-  # Specifying rf as our model type, asking to tune the hyperparameters
-boost_tree(
-  trees = tune(),
-  tree_depth = tune(),
-  min_n = tune(),
-  loss_reduction =tune(),
-  sample_size = tune(),
-  mtry = tune(),
+xg_spec <- boost_tree(
+  trees = 1000, 
+  tree_depth = tune(), min_n = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(), mtry = tune(),
   learn_rate = tune()
-) %>% 
-    # Specify the engine
+  )%>% 
+     #Specify the engine
 set_engine("xgboost") %>% 
     # Specifying mode  
 set_mode("regression")
+
 xg_spec
 ```
 
@@ -187,26 +190,82 @@ Here's how it works:
 
 In the algorithm below, we are asking for 50 iterations.  
 ```{r}
-xg_param <- xg_spec %>% 
-  extract_parameter_set_dials() %>% 
-  update(gamma = gamma())
+xgb_grid <- grid_latin_hypercube(
+  tree_depth(),
+  min_n(),
+  loss_reduction(),
+  sample_size = sample_prop(),
+  finalize(mtry(), weather_train),
+  learn_rate(), 
+  size = 30
+)
+```
+```{r}
+xgb_wf <- workflow() %>% 
+  add_formula(strength_gtex ~ .) %>% 
+  add_model(xg_spec)
+```
+```{r}
+doParallel::registerDoParallel()
+set.seed(123)
+xgb_res <- tune_grid(
+  xgb_wf,
+  resamples = resampling_foldcv,
+  grid = xgb_grid,
+  control = control_grid(save_pred = T)
+  )
+
+xgb_res[[3]]
 
 ```
+
 
 ```{r rf_grid_result}
-set.seed(76544)
-xg_grid_result <- tune_sim_anneal(object = xg_spec,
-                     preprocessor = weather_recipe,
-                     resamples = resampling_foldcv,
-                    #param_info = rf_param,
-                    iter = 20
-                     )
+collect_metrics(xgb_res)
+
+xgb_res %>%
+  collect_metrics() %>%
+  filter(.metric == "rmse") %>%
+  select(mean, mtry:sample_size) %>%
+  pivot_longer(mtry:sample_size,
+               values_to = "value",
+               names_to = "parameter"
+  ) %>%
+  ggplot(aes(value, mean, color = parameter)) +
+  geom_point(alpha = 0.8, show.legend = FALSE) +
+  facet_wrap(~parameter, scales = "free_x") +
+  labs(x = NULL, y = "rmse")
 
 
-xg_grid_result
-xg_grid_result$.metrics[[2]]
-collect_metrics(xg_grid_result)
 ```
+```{r}
+show_best(xgb_res, metric = "rmse")
+```
+```{r}
+best_rmse <- select_best(xgb_res, metric =  "rmse")
+```
+
+```{r}
+final_xgb <- finalize_workflow(
+  xgb_wf,
+  best_rmse
+)
+```
+```{r}
+final_fit <- last_fit(final_xgb, weather_split)
+collect_metrics(final_fit)
+```
+
+```{r}
+final_fit %>% 
+  collect_predictions() %>%
+  ggplot(aes(strength_gtex, .pred))+
+  geom_point()+
+  geom_abline()+
+  geom_smooth()
+```
+
+
 Notice how we have a column for iterations.  
 The first iteration uses a sensible value for the hyper-parameters, and then starts "walking" the parameter space in the direction of greatest improvement.  
 
@@ -276,20 +335,22 @@ show_best(xg_grid_result)
 learning rate is a parameter that determines the step size at each iteration while moving towards a global minimum. 
 
 ```{r final_spec}
-final_spec <- boost_tree(
-  trees = best_rmse$trees,
-  tree_depth = 9,
-  min_n = best_r2$min_n,
-  loss_reduction = best_r2$loss_reduction,
-  sample_size = best_r2$sample_size,
-  mtry = best_r2$mtry,
-  learn_rate = best_r2$learn_rate
-) %>% 
+final_spec <- xgboost(
+  data = x,
+  label = y,
+  nrounds = best_rmse$trees,
+  max_depth = best_r2$tree_depth,
+  min_child_weight= best_r2$min_n,
+  gamma = best_r2$loss_reduction,
+  subsample = best_r2$sample_size,
+  colsample_bytree = best_r2$mtry,
+  eta = best_r2$learn_rate,
+  alpha = 0.2,
+  objective = "reg:squarederror"
+) 
   # Specify the engine
-  set_engine("xgboost") %>% 
 
     # Specifying mode  
-  set_mode("regression")
   
 
 final_spec

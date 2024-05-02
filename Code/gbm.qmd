@@ -106,7 +106,7 @@ weather_recipe <-
          data = weather_train) %>%
   step_integer(all_nominal()) %>% 
   # Removing year and site  
-    step_rm(year, site, matches("Jan|Feb|Mar|Apr|Nov|Dec")) %>%
+    step_rm(year, site, matches("Jan|Feb|Mar|Apr|Nov|Dec")) #%>%
 prep(traing = weather_train, retain = T) %>% 
   juice()
   # Normalizing all numeric variables except predicted variable
@@ -119,8 +119,8 @@ weather_recipe
 Now that we have our recipe ready, we **need to apply it** to the training data in a process called prepping:
 
 ```{r weather_prep}
-#weather_prep <- weather_recipe %>%
- # prep()
+weather_prep <- weather_recipe %>%
+  prep()
 
 weather_prep
 #X <- as.matrix(weather_prep[setdiff(names(weather_prep), "strength_gtex")])
@@ -136,14 +136,15 @@ Now, we're ready to start the model training process!
   
 ```{r rf_spec}
 xg_spec <- boost_tree(
-  trees = 1000, 
+  trees = tune(), 
   tree_depth = tune(), min_n = tune(),
   loss_reduction = tune(),
   sample_size = tune(), mtry = tune(),
   learn_rate = tune()
   )%>% 
      #Specify the engine
-set_engine("xgboost") %>% 
+set_engine("xgboost"
+          ) %>% 
     # Specifying mode  
 set_mode("regression")
 
@@ -187,10 +188,19 @@ Here's how it works:
   - If this achieves better results than the previous parameters, it is accepted as the new best and the process continues. If the results are worse than the previous value the search procedure may still use this parameter to define further steps. 
   
   - After a given number of iterations, the algorithm stops and provides a list of the best models and their hyperparameters.  
+```{r}
+xgb_param <- xg_spec %>% 
+  extract_parameter_set_dials() %>% 
+  update(lambda = lambda())
+```
+
+
+
 
 In the algorithm below, we are asking for 50 iterations.  
 ```{r}
 xgb_grid <- grid_latin_hypercube(
+  trees(),
   tree_depth(),
   min_n(),
   loss_reduction(),
@@ -202,12 +212,14 @@ xgb_grid <- grid_latin_hypercube(
 ```
 ```{r}
 xgb_wf <- workflow() %>% 
-  add_formula(strength_gtex ~ .) %>% 
+  add_recipe(weather_recipe) %>% 
   add_model(xg_spec)
 ```
+
+
 ```{r}
 doParallel::registerDoParallel()
-set.seed(123)
+set.seed(76544)
 xgb_res <- tune_grid(
   xgb_wf,
   resamples = resampling_foldcv,
@@ -239,18 +251,20 @@ xgb_res %>%
 
 ```
 ```{r}
-show_best(xgb_res, metric = "rmse")
+show_best(xgb_res, metric = "rsq")
 ```
 ```{r}
-best_rmse <- select_best(xgb_res, metric =  "rmse")
+best_rsq <- select_best(xgb_res, metric =  "rsq")
 ```
 
 ```{r}
 final_xgb <- finalize_workflow(
   xgb_wf,
-  best_rmse
+  best_rsq
 )
 ```
+
+
 ```{r}
 final_fit <- last_fit(final_xgb, weather_split)
 collect_metrics(final_fit)
@@ -265,96 +279,19 @@ final_fit %>%
   geom_smooth()
 ```
 
+___________________________________
 
-Notice how we have a column for iterations.  
-The first iteration uses a sensible value for the hyper-parameters, and then starts "walking" the parameter space in the direction of greatest improvement.  
 
-Let's collect a summary of metrics (across all folds, for each iteration), and plot them.  
 
-Firs, RMSE (lower is better):
-```{r RMSE}
-xg_grid_result %>% 
-  collect_metrics() %>% 
-  filter(.metric == "rmse") %>% 
-  pivot_longer(mtry:sample_size,
-               names_to = "parameter",
-               values_to = "value") %>% 
-  ggplot(aes(value,mean))+
-  geom_path(group = 1)+
-  geom_point(aes(color = mean),
-             size = 3)+ 
-  facet_wrap(~parameter, scales = "free_x")+
-  geom_text(aes(label = .iter), nudge_x = .0005)+
-  labs(title = "RMSE")
-```
-
-What tree_depth and min criterion values created lowest RMSE?  
-
-Now, let's look into R2 (higher is better):  
-
-```{r R2}
-xg_grid_result %>%
-  collect_metrics() %>%
-  filter(.metric == "rsq") %>%
-  select(mean, mtry:sample_size) %>% 
-  pivot_longer(mtry:sample_size,
-               values_to = "value",
-               names_to = "parameter") %>% 
-  ggplot(aes(x = value, 
-             y = mean,
-             color = parameter
-             )) +
-  geom_point(size = 3, show.legend = F) + 
-  facet_wrap(~parameter, scales = "free_x")+
-  labs(title = "RSQ")
 
 ```
 
-> Previously, we selected the single best model. Now, let's select the best model within one std error of the metric, so we choose a model among the top ones that is more parsimonious.  
 
-```{r}
-# Based on lowest RMSE
-best_rmse <- xg_grid_result %>% 
-  select_best(metric = "rmse")
-best_rmse
-
-```
-
-```{r}
-# Based on greatest R2
-best_r2 <- xg_grid_result %>% 
-  select_best(
-               metric = "rsq",
-              )
-
-
-best_r2
-show_best(xg_grid_result)
 
 ```
 learning rate is a parameter that determines the step size at each iteration while moving towards a global minimum. 
 
-```{r final_spec}
-final_spec <- xgboost(
-  data = x,
-  label = y,
-  nrounds = best_rmse$trees,
-  max_depth = best_r2$tree_depth,
-  min_child_weight= best_r2$min_n,
-  gamma = best_r2$loss_reduction,
-  subsample = best_r2$sample_size,
-  colsample_bytree = best_r2$mtry,
-  eta = best_r2$learn_rate,
-  alpha = 0.2,
-  objective = "reg:squarederror"
-) 
-  # Specify the engine
 
-    # Specifying mode  
-  
-
-final_spec
-```
 
 ## 3. Validation  
 Now that we determined our best model, let's do our **last fit**.
@@ -365,25 +302,16 @@ This means 2 things:
 
 These 2 steps can be completed in one function, as below:  
 
-```{r final_fit}
-final_fit <- last_fit(final_spec,
-                weather_recipe,
-                split = weather_split)
-
-final_fit %>%
-  collect_predictions()
-```
 
 Metrics on the **test set**:
 ```{r}
-final_fit %>%
-  collect_metrics()
+
 ```
 
 Metrics on **train set** (for curiosity and compare to test set):  
 ```{r}
 # RMSE
-final_spec %>%
+final_xgb %>%
   fit(strength_gtex ~ .,
       data = bake(weather_prep, 
                   weather_train)) %>%
@@ -409,18 +337,13 @@ How does metrics on test compare to metrics on train?
 
 Predicted vs. observed plot:  
 ```{r}
-final_fit %>%
-  collect_predictions() %>%
-  ggplot(aes(x = strength_gtex,
-             y = .pred)) +
-  geom_point() +
-  geom_abline() +
-  geom_smooth(method = "lm") +
-  scale_x_continuous(limits = c(20, 40)) +
-  scale_y_continuous(limits = c(20, 40)) 
+
 ```
 ```{r}
-vip::vip(final_fit)
+final_xgb %>% 
+  fit(data = weather_train) %>% 
+  pull_workflow_fit() %>% 
+  vip(geom = "point")
 ```
 
 Variable importance: 

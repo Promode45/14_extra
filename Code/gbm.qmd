@@ -239,11 +239,14 @@ final_xgb <- finalize_workflow(
 )
 ```
 
+Final model fit:
 
 ```{r}
 final_fit <- last_fit(final_xgb, weather_split)
 collect_metrics(final_fit)
 ```
+Predicted v/s observed : 
+
 
 ```{r}
 final_fit %>% 
@@ -287,7 +290,11 @@ final_xgb %>%
   )
 
 ```
-How does metrics on test compare to metrics on train?  
+Variable importance: 
+
+
+The variables with the **largest average decrease in accuracy** are considered **most important**.  
+
 
 
 ```{r}
@@ -296,70 +303,5 @@ final_xgb %>%
   pull_workflow_fit() %>% 
   vip(geom = "point")
 ```
-
-Variable importance: 
-
-The importance metric we are evaluating here is **permutation**. 
-
-In the permutation-based approach, for each tree, the out- of-bag sample is passed down the tree and the prediction accuracy is recorded.   
-
-Then the values for each variable (one at a time) are randomly permuted and the accuracy is again computed.   
-
-The decrease in accuracy as a result of this randomly shuffling of feature values is averaged over all the trees for each predictor.   
-
-The variables with the **largest average decrease in accuracy** are considered **most important**.  
-
-```{r}
-final_spec %>%
-  fit(strength_gtex ~ .,
-         data = bake(weather_prep, weather)) %>%
-    vi() %>%
-  mutate(
-    Variable = fct_reorder(Variable, 
-                           Importance)
-  ) %>%
-  ggplot(aes(x = Importance, 
-             y = Variable)) +
-  geom_col() +
-  scale_x_continuous(expand = c(0, 0)) +
-  labs(y = NULL)
-    
-```
-
-**Therefore, solar radiation in July and August, and minimum temperature in June were the most important variables affecting cotton fiber strength.**  
-
-# Summary  
-In this exercise, we covered: 
-  - Random forest algorithm    
-  - Set up a ML workflow to train an rf model  
-  - Used `recipes` to process data
-  - Used `rsamples` to split data  
-  - Used **iterative search** to find the best values for mas_depth and min_criterion    
-  - Used 5-fold cross validation as the resampling method  
-  - Used both R2 and RMSE as the metrics to select best model  
-  - Once final model was determined, used it to predict **test set**  
-  - Evaluated it with predicted vs. observed plot, R2 and RMSE metrics, variable importance, and tree plot    
-
-# Further resources:  
-
-  - Tidy modeling with R: https://www.tmwr.org  
-  - Tidy modeling with R book club: https://r4ds.github.io/bookclub-tmwr/  
-  
-    - Hands-on ML in R: https://bradleyboehmke.github.io/HOML/  
-  
-  - ML for social scientists: https://cimentadaj.github.io/ml_socsci/  
-
-# Quiz  
-Go on eLC.  
-
-# TEVAL  
-
-Please take 5 min to respond to the TEVAL.  
-Your feedback is really important for me to know what worked, what didn't, and improve for next time.  
-
-Thanks!
-
-Link: https://webapps.franklin.uga.edu/evaluation/?_ga=2.232813078.929468690.1713977543-462720075.1710361396&_gl=1*o88gkf*_ga*NDYyNzIwMDc1LjE3MTAzNjEzOTY.*_ga_3ZLXDSEKEC*MTcxNDAxMzg4Mi4xLjEuMTcxNDAxNDM4MC4wLjAuMA..
-
 
 

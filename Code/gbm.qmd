@@ -107,12 +107,12 @@ weather_recipe <-
   step_integer(all_nominal()) %>% 
   # Removing year and site  
     step_rm(year, site, matches("Jan|Feb|Mar|Apr|Nov|Dec")) #%>%
-prep(traing = weather_train, retain = T) %>% 
-  juice()
+#prep(traing = weather_train, retain = T) %>% 
+  #juice()
   # Normalizing all numeric variables except predicted variable
   #step_normalize(all_numeric(), -all_outcomes())
-x <- as.matrix(weather_recipe[setdiff(names(weather_recipe), "strength_gtex")])
-y <- weather_recipe$strength_gtex
+#x <- as.matrix(weather_recipe[setdiff(names(weather_recipe), "strength_gtex")])
+#y <- weather_recipe$strength_gtex
 weather_recipe
 ```
 
@@ -123,8 +123,7 @@ weather_prep <- weather_recipe %>%
   prep()
 
 weather_prep
-#X <- as.matrix(weather_prep[setdiff(names(weather_prep), "strength_gtex")])
-#Y <- weather_prep$strength_gtex
+
 ```
 
 
@@ -134,7 +133,7 @@ Now, we're ready to start the model training process!
 ### a. Model specification  
   
   
-```{r rf_spec}
+```{r xg_spec}
 xg_spec <- boost_tree(
   trees = tune(), 
   tree_depth = tune(), min_n = tune(),
@@ -154,12 +153,7 @@ xg_spec
 Notice how the main arguments above do not have a value **yet**, because they will be tuned.  
 
 ### b. Hyper-parameter tuning  
-For our iterative search, we need:  
-  - Our model specification (`rf_spec`)  
-  - The recipe (`weather_recipe`)  
-  - Our **resampling strategy** (don't have yet)  
 
-> Notice that for rf we do not need to specify the parameter information, as we needed for CIT. The reason is that for rf, all hyperparameters to be tuned are specified at the model level, whereas for CIT one was at model level and one was at the engine level. Engine level hyperparameters need to be "finalized" and have their range of values set up before they can be used in search methods.  
 
 Let's define our resampling strategy below, using a 5-fold cross validation approach:  
 ```{r resampling_foldcv}
@@ -171,28 +165,7 @@ resampling_foldcv
 resampling_foldcv$splits[[1]]
 resampling_foldcv$splits[[2]]
 ```
-On each fold, we'll use **390** observations for training and **98** observations to assess performance.    
 
-Now, let's perform the search below.  
-
-We will use an iterative search algorithm called **simulated annealing**.  
-
-Here's how it works:  
-![](https://www.tmwr.org/figures/iterative-neighborhood-1.png)
-  - In the example above, mixture and penalty from an elastic net model are being tuned.  
-
-  - It finds a candidate value of hyperparameters and their associated rmse to start (iteration 1).  
-
-  - It establishes a radius around the first proposal, and randomly chooses a new set of values within that radius.  
-  
-  - If this achieves better results than the previous parameters, it is accepted as the new best and the process continues. If the results are worse than the previous value the search procedure may still use this parameter to define further steps. 
-  
-  - After a given number of iterations, the algorithm stops and provides a list of the best models and their hyperparameters.  
-```{r}
-xgb_param <- xg_spec %>% 
-  extract_parameter_set_dials() %>% 
-  update(lambda = lambda())
-```
 
 
 
@@ -207,9 +180,10 @@ xgb_grid <- grid_latin_hypercube(
   sample_size = sample_prop(),
   finalize(mtry(), weather_train),
   learn_rate(), 
-  size = 30
+  size = 50
 )
 ```
+
 ```{r}
 xgb_wf <- workflow() %>% 
   add_recipe(weather_recipe) %>% 
@@ -251,16 +225,17 @@ xgb_res %>%
 
 ```
 ```{r}
-show_best(xgb_res, metric = "rsq")
+show_best(xgb_res, metric = "rmse")
 ```
+
 ```{r}
-best_rsq <- select_best(xgb_res, metric =  "rsq")
+best_rmse <- select_best(xgb_res, metric = "rsq")
 ```
 
 ```{r}
 final_xgb <- finalize_workflow(
   xgb_wf,
-  best_rsq
+  best_rmse
 )
 ```
 
@@ -284,29 +259,8 @@ ___________________________________
 
 
 
-```
-
-
-
-```
 learning rate is a parameter that determines the step size at each iteration while moving towards a global minimum. 
 
-
-
-## 3. Validation  
-Now that we determined our best model, let's do our **last fit**.
-
-This means 2 things:  
-  - Traninig the optimum hyperparameter values on the **entire training set**  
-  - Using it to **predict** on the **test set**  
-
-These 2 steps can be completed in one function, as below:  
-
-
-Metrics on the **test set**:
-```{r}
-
-```
 
 Metrics on **train set** (for curiosity and compare to test set):  
 ```{r}
@@ -335,10 +289,7 @@ final_xgb %>%
 ```
 How does metrics on test compare to metrics on train?  
 
-Predicted vs. observed plot:  
-```{r}
 
-```
 ```{r}
 final_xgb %>% 
   fit(data = weather_train) %>% 
